@@ -1,0 +1,8 @@
+name: umi_lerobot
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - ipykernel
+prefix: /opt/anaconda3/envs/umi_lerobot
