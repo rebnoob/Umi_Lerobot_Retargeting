@@ -53,3 +53,36 @@ The core script is `notebooks/umi_to_lerobot_v3_retarget_workflow.ipynb`. It is 
 ## Output
 
 A standard LeRobot v3 structure will be created inside `OUTPUT_ROOT`. You should expect folders like `meta/`, `videos/`, and raw parquet logs that are fully compatible with HuggingFace `lerobot` training pipelines.
+
+## Run on Real SO-101 (Feetech)
+
+Use:
+- `scripts/replay_so101_real.py`
+
+This script converts the retargeted dataset action format (`joint_1..joint_5, gripper`) into SO-101 motor commands (`*.pos`) and handles unit conversion (radians to degrees, gripper 0-1 to 0-100).
+
+### 1) Dry-run (no motor movement)
+
+```bash
+python scripts/replay_so101_real.py \
+  --dataset-root "/Users/rebnoob/Downloads/Umi Data/outputs/datasets/lerobot_umi_pick_cube_so101_v3" \
+  --episode 0
+```
+
+### 2) Real replay
+
+```bash
+python scripts/replay_so101_real.py \
+  --dataset-root "/Users/rebnoob/Downloads/Umi Data/outputs/datasets/lerobot_umi_pick_cube_so101_v3" \
+  --episode 0 \
+  --port /dev/tty.usbmodem5A460814411 \
+  --robot-id so101_real \
+  --execute
+```
+
+### 3) Useful safety flags
+
+- `--max-relative-target-deg 5`: clamp per-step arm motion to 5 degrees.
+- `--max-relative-target-gripper 12`: clamp per-step gripper change.
+- `--go-to-start-seconds 2.0`: smoothly move from current pose to first replay frame.
+- `--skip-calibrate`: skip automatic calibration prompt (use only if already calibrated).
