@@ -7,7 +7,16 @@ import importlib.util
 import sys
 from pathlib import Path
 
-LOCAL_LEROBOT_REPO = Path('/Users/rebnoob/Downloads/Umi Data/lerobot')
+def find_workspace_root(start: Path | None = None) -> Path:
+    start = (start or Path.cwd()).resolve()
+    for candidate in [start, *start.parents]:
+        if (candidate / "lerobot").exists() and (candidate / "outputs").exists():
+            return candidate
+    return start
+
+
+WORKSPACE_ROOT = find_workspace_root()
+LOCAL_LEROBOT_REPO = WORKSPACE_ROOT / "lerobot"
 LOCAL_LEROBOT_SRC = LOCAL_LEROBOT_REPO / 'src'
 
 if importlib.util.find_spec('lerobot') is None:
@@ -18,7 +27,7 @@ if importlib.util.find_spec('lerobot') is None:
     raise ModuleNotFoundError(
         "No module named 'lerobot'.\n"
         "Fix in this notebook kernel with one of:\n"
-        "  1) %pip install -e /Users/rebnoob/lerobot\n"
+        f"  1) %pip install -e {LOCAL_LEROBOT_REPO}\n"
         "  2) Select a Jupyter kernel that already has lerobot installed."
     )
 
@@ -65,7 +74,7 @@ GOLDEN_DATASET_ROOT = None  # e.g. Path('/abs/path/to/your/so101_golden_dataset'
 GOLDEN_REPO_ID = 'local/so101_golden'
 
 # UMI source
-UMI_ZARR_PATH = Path('/Users/rebnoob/Downloads/Umi Data/data/raw/pick_cube.zarr')
+UMI_ZARR_PATH = WORKSPACE_ROOT / "data" / "raw" / "pick_cube.zarr"
 UMI_FPS = 59.94
 
 # Timeline conversion
@@ -78,7 +87,7 @@ RETARGET_MODE = 'auto'  # {'auto', 'joint_passthrough', 'ik', 'proxy'}
 STRICT_SO101_ACTION = False  # if True, fail when only proxy retarget is available
 
 # IK config (only needed if RETARGET_MODE uses IK)
-SO101_URDF_PATH = ('/Users/rebnoob/Downloads/Umi Data/assets/urdf/so101_new_calib.urdf')  # e.g. Path('/abs/path/to/so101.urdf')
+SO101_URDF_PATH = WORKSPACE_ROOT / "assets" / "urdf" / "so101_new_calib.urdf"  # e.g. Path('/abs/path/to/so101.urdf')
 IK_ACTIVE_LINK_MASK = None  # e.g. [False, True, True, True, True, True, False]
 IK_ARM_ACTIVE_INDICES = None  # indices into active joints for q1..q5; None -> first 5 active joints
 IK_MAX_ITERS = 100
@@ -93,7 +102,7 @@ GRIPPER_KEY = 'robot0_gripper_width'  # expected shape (T,1)
 GRIPPER_INVERT = False  # set True if close/open direction is reversed after sanity check
 
 # Output LeRobot dataset
-OUTPUT_ROOT = Path('/Users/rebnoob/Downloads/Umi Data/outputs/datasets/lerobot_umi_pick_cube_so101_v3')
+OUTPUT_ROOT = WORKSPACE_ROOT / "outputs" / "datasets" / "lerobot_umi_pick_cube_so101_v3"
 OUTPUT_REPO_ID = 'local/umi_pick_cube_so101_v3'
 OVERWRITE_OUTPUT = True
 TASK_TEXT = 'pick_cube'
@@ -107,7 +116,7 @@ STATE_KEY = 'observation.state'
 ACTION_NAMES = ['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'gripper']
 
 # Step 7 debug outputs
-DEBUG_VIDEO_PATH = Path('/Users/rebnoob/Downloads/Umi Data/outputs/videos/retarget_debug_alignment.mp4')
+DEBUG_VIDEO_PATH = WORKSPACE_ROOT / "outputs" / "videos" / "retarget_debug_alignment.mp4"
 DEBUG_EPISODE_INDEX = 0
 
 print('Config loaded')
@@ -830,4 +839,3 @@ plt.ylabel('MSE')
 plt.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.show()
-

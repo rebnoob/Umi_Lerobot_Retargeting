@@ -19,8 +19,10 @@ The core script is `notebooks/umi_to_lerobot_v3_retarget_workflow.ipynb`. It is 
 - `data/raw/`: Store your raw `.zarr` files here.
 - `assets/urdf/`: Contains the URDF models for Inverse Kinematics calculation.
 - `notebooks/`: Contains the Jupyter Notebook workflows.
+- `tools/maintenance/`: One-off notebook patch/export helpers.
 - `outputs/datasets/`: Outputs the final `lerobot` compatible dataset.
 - `outputs/videos/`: Output for debug videos.
+- `outputs/reports/`: JSON/CSV diagnostics from collision and replay checks.
 - `lerobot/`: Expects a local clone of `huggingface/lerobot`.
 
 ## Setup & Requirements
@@ -65,7 +67,7 @@ This script converts the retargeted dataset action format (`joint_1..joint_5, gr
 
 ```bash
 python scripts/replay_so101_real.py \
-  --dataset-root "/Users/rebnoob/Downloads/Umi Data/outputs/datasets/lerobot_umi_pick_cube_so101_v3" \
+  --dataset-root "outputs/datasets/lerobot_umi_pick_cube_so101_v3" \
   --episode 0
 ```
 
@@ -73,7 +75,7 @@ python scripts/replay_so101_real.py \
 
 ```bash
 python scripts/replay_so101_real.py \
-  --dataset-root "/Users/rebnoob/Downloads/Umi Data/outputs/datasets/lerobot_umi_pick_cube_so101_v3" \
+  --dataset-root "outputs/datasets/lerobot_umi_pick_cube_so101_v3" \
   --episode 0 \
   --port /dev/tty.usbmodem5A460814411 \
   --robot-id so101_real \
@@ -86,3 +88,13 @@ python scripts/replay_so101_real.py \
 - `--max-relative-target-gripper 12`: clamp per-step gripper change.
 - `--go-to-start-seconds 2.0`: smoothly move from current pose to first replay frame.
 - `--skip-calibrate`: skip automatic calibration prompt (use only if already calibrated).
+
+## Verify Folder Compatibility
+
+Run this after moving the workspace to a new location:
+
+```bash
+python scripts/verify_workspace_compatibility.py
+```
+
+It validates required directories/files and default paths used by scripts and notebooks.

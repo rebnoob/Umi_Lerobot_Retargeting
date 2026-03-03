@@ -1,7 +1,9 @@
 import json
+from pathlib import Path
 
-path = '/Users/rebnoob/Downloads/Umi Data/notebooks/umi_to_lerobot_v3_retarget_workflow.ipynb'
-with open(path, 'r') as f:
+ROOT = Path(__file__).resolve().parents[2]
+path = ROOT / "notebooks" / "umi_to_lerobot_v3_retarget_workflow.ipynb"
+with path.open("r", encoding="utf-8") as f:
     nb = json.load(f)
 
 for cell in nb['cells']:
@@ -31,7 +33,7 @@ for cell in nb['cells']:
                         break
                 break
 
-with open(path, 'w') as f:
+with path.open("w", encoding="utf-8") as f:
     json.dump(nb, f, indent=2)
 
 print("Patched notebook successfully")

@@ -24,6 +24,10 @@ import zarr
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_ZARR_PATH = PROJECT_ROOT / "data" / "raw" / "pick_cube.zarr"
+DEFAULT_OUTPUT = PROJECT_ROOT / "outputs" / "videos" / "rgb_with_trajectory.mp4"
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -32,14 +36,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--zarr-path",
         type=Path,
-        default=Path("pick_cube.zarr"),
-        help="Path to UMI Zarr store (default: pick_cube.zarr).",
+        default=DEFAULT_ZARR_PATH,
+        help="Path to UMI Zarr store.",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("rgb_with_trajectory.mp4"),
-        help="Output MP4 path (default: rgb_with_trajectory.mp4).",
+        default=DEFAULT_OUTPUT,
+        help="Output MP4 path.",
     )
     parser.add_argument(
         "--camera-key",

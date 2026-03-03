@@ -36,9 +36,9 @@ ARM_MOTORS = [
 ]
 ALL_MOTORS = ARM_MOTORS + ["gripper"]
 
-DEFAULT_DATASET_ROOT = Path(
-    "/Users/rebnoob/Downloads/Umi Data/outputs/datasets/lerobot_umi_pick_cube_so101_v3"
-)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DATASET_ROOT = PROJECT_ROOT / "outputs" / "datasets" / "lerobot_umi_pick_cube_so101_v3"
+DEFAULT_LEROBOT_SRC = PROJECT_ROOT / "lerobot" / "src"
 
 
 def parse_args() -> argparse.Namespace:
@@ -124,7 +124,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--lerobot-src",
         type=Path,
-        default=Path("/Users/rebnoob/Downloads/Umi Data/lerobot/src"),
+        default=DEFAULT_LEROBOT_SRC,
         help="Path to lerobot/src. Used when lerobot is not pip-installed.",
     )
     parser.add_argument(

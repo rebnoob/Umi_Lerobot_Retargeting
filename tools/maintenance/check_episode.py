@@ -1,8 +1,10 @@
 import zarr
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 
-z = zarr.open('data/raw/pick_cube.zarr', mode='r')
+ROOT = Path(__file__).resolve().parents[2]
+z = zarr.open(str(ROOT / "data" / "raw" / "pick_cube.zarr"), mode='r')
 ep_ends = z['meta']['episode_ends'][:]
 starts = np.concatenate([[0], ep_ends[:-1]])
 ep_idx = 1
@@ -15,7 +17,7 @@ rot = z['data']['robot0_eef_rot_axis_angle'][start:end]
 # let's run IK manually here to see where it fails
 from ikpy.chain import Chain
 from scipy.spatial.transform import Rotation
-chain = Chain.from_urdf_file("assets/urdf/so101_new_calib.urdf")
+chain = Chain.from_urdf_file(str(ROOT / "assets" / "urdf" / "so101_new_calib.urdf"))
 active_joint_indices = [i for i, is_active in enumerate(chain.active_links_mask) if is_active]
 q_full = np.zeros(len(chain.links), dtype=np.float64)
 
@@ -64,6 +66,8 @@ plt.figure()
 plt.plot(pos[:, 2], label='Raw UMI Z')
 plt.plot(z_s, label='IK Z', linestyle='dashed')
 plt.legend()
-plt.savefig('ep1_ik_z_retry.png')
+out = ROOT / "outputs" / "images" / "debug" / "ep1_ik_z_retry.png"
+out.parent.mkdir(parents=True, exist_ok=True)
+plt.savefig(str(out))
 
 print("Fails after retry logic:", pos.shape[0] - sum(ok_list))

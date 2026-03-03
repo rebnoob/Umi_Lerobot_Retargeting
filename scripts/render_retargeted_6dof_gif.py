@@ -21,19 +21,24 @@ from matplotlib.animation import FuncAnimation, PillowWriter
 
 matplotlib.use("Agg")
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DATASET_ROOT = PROJECT_ROOT / "outputs" / "datasets" / "lerobot_umi_pick_cube_so101_v3"
+DEFAULT_URDF = PROJECT_ROOT / "assets" / "urdf" / "so101_new_calib.urdf"
+DEFAULT_OUTPUT = PROJECT_ROOT / "outputs" / "videos" / "retargeted_6dof_ep0.gif"
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Render retargeted 6-DoF motion as GIF.")
     parser.add_argument(
         "--dataset-root",
         type=Path,
-        default=Path("/Users/rebnoob/Downloads/Umi Data/outputs/datasets/lerobot_umi_pick_cube_so101_v3"),
+        default=DEFAULT_DATASET_ROOT,
         help="LeRobot v3 dataset root path.",
     )
     parser.add_argument(
         "--urdf",
         type=Path,
-        default=Path("/Users/rebnoob/Downloads/Umi Data/assets/urdf/so101_new_calib.urdf"),
+        default=DEFAULT_URDF,
         help="SO-101 URDF path used for forward kinematics.",
     )
     parser.add_argument("--episode", type=int, default=0, help="Episode index to render.")
@@ -49,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("/Users/rebnoob/Downloads/Umi Data/outputs/videos/retargeted_6dof_ep0.gif"),
+        default=DEFAULT_OUTPUT,
         help="Output GIF path.",
     )
     return parser.parse_args()

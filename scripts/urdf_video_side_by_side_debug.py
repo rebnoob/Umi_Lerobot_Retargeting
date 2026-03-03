@@ -26,13 +26,21 @@ from matplotlib.animation import FuncAnimation, PillowWriter
 
 matplotlib.use("Agg")
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DATASET_ROOT = PROJECT_ROOT / "outputs" / "datasets" / "lerobot_umi_pick_cube_so101_v3"
+DEFAULT_URDF = PROJECT_ROOT / "assets" / "urdf" / "so101_new_calib.urdf"
+DEFAULT_OUTPUT_GIF = PROJECT_ROOT / "outputs" / "videos" / "so101_video_urdf_debug_ep0.gif"
+DEFAULT_OUTPUT_JSON = PROJECT_ROOT / "outputs" / "reports" / "so101_video_urdf_debug_ep0.json"
+DEFAULT_OUTPUT_CSV = PROJECT_ROOT / "outputs" / "reports" / "so101_video_urdf_debug_ep0_frames.csv"
+DEFAULT_LEROBOT_SRC = PROJECT_ROOT / "lerobot" / "src"
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Render camera+URDF side-by-side debug GIF.")
     parser.add_argument(
         "--dataset-root",
         type=Path,
-        default=Path("/Users/rebnoob/Downloads/Umi Data/outputs/datasets/lerobot_umi_pick_cube_so101_v3"),
+        default=DEFAULT_DATASET_ROOT,
         help="LeRobot dataset root.",
     )
     parser.add_argument(
@@ -44,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--urdf",
         type=Path,
-        default=Path("/Users/rebnoob/Downloads/Umi Data/assets/urdf/so101_new_calib.urdf"),
+        default=DEFAULT_URDF,
         help="URDF path.",
     )
     parser.add_argument("--episode", type=int, default=0, help="Episode index.")
@@ -60,25 +68,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-gif",
         type=Path,
-        default=Path("/Users/rebnoob/Downloads/Umi Data/outputs/videos/so101_video_urdf_debug_ep0.gif"),
+        default=DEFAULT_OUTPUT_GIF,
         help="Output GIF path.",
     )
     parser.add_argument(
         "--output-json",
         type=Path,
-        default=Path("/Users/rebnoob/Downloads/Umi Data/outputs/reports/so101_video_urdf_debug_ep0.json"),
+        default=DEFAULT_OUTPUT_JSON,
         help="Output JSON summary.",
     )
     parser.add_argument(
         "--output-csv",
         type=Path,
-        default=Path("/Users/rebnoob/Downloads/Umi Data/outputs/reports/so101_video_urdf_debug_ep0_frames.csv"),
+        default=DEFAULT_OUTPUT_CSV,
         help="Output per-frame CSV.",
     )
     parser.add_argument(
         "--lerobot-src",
         type=Path,
-        default=Path("/Users/rebnoob/lerobot/src"),
+        default=DEFAULT_LEROBOT_SRC,
         help="Path to lerobot/src for import bootstrap.",
     )
     return parser.parse_args()
@@ -92,7 +100,7 @@ def bootstrap_lerobot(lerobot_src: Path):
     except Exception as exc:
         raise ModuleNotFoundError(
             f"Failed to import lerobot. Tried path: {lerobot_src}\n"
-            f"Install with: pip install -e /Users/rebnoob/lerobot"
+            f"Install with: pip install -e {PROJECT_ROOT / 'lerobot'}"
         ) from exc
     return LeRobotDataset
 

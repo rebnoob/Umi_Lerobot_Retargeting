@@ -1,7 +1,11 @@
 import json
+import os
+import subprocess
+from pathlib import Path
 
-path = '/Users/rebnoob/Downloads/Umi Data/notebooks/umi_to_lerobot_v3_retarget_workflow.ipynb'
-with open(path, 'r') as f:
+ROOT = Path(__file__).resolve().parents[2]
+path = ROOT / "notebooks" / "umi_to_lerobot_v3_retarget_workflow.ipynb"
+with path.open("r", encoding="utf-8") as f:
     nb = json.load(f)
 
 lines = []
@@ -21,8 +25,8 @@ for line in lines:
         out_lines.append(line)
 
 final_code = "".join(future_lines + out_lines)
-with open('notebooks/umi_to_lerobot_v3_retarget_workflow.py', 'w') as f:
+py_out = ROOT / "notebooks" / "umi_to_lerobot_v3_retarget_workflow.py"
+with py_out.open("w", encoding="utf-8") as f:
     f.write(final_code)
 
-import os
-os.system('/opt/anaconda3/envs/umi_lerobot/bin/python notebooks/umi_to_lerobot_v3_retarget_workflow.py')
+subprocess.run([os.environ.get("PYTHON", "python"), str(py_out)], check=False)

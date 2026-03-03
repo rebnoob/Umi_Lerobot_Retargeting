@@ -22,6 +22,9 @@ except ImportError as exc:  # pragma: no cover - import guard for clearer UX
         "  python3 -m pip install zarr numcodecs imagecodecs imagecodecs-numcodecs"
     ) from exc
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_ZARR_PATH = PROJECT_ROOT / "data" / "raw" / "pick_cube.zarr"
+
 
 @dataclass
 class Selection:
@@ -259,8 +262,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "zarr_path",
         nargs="?",
-        default="pick_cube.zarr",
-        help="Path to UMI Zarr store (default: pick_cube.zarr)",
+        default=str(DEFAULT_ZARR_PATH),
+        help="Path to UMI Zarr store.",
     )
     parser.add_argument("--list", action="store_true", help="List available keys and dataset summary.")
     parser.add_argument("--interactive", action="store_true", help="Force interactive key/selection prompts.")
