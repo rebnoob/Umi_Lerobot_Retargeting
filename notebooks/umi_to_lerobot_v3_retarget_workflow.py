@@ -94,6 +94,12 @@ IK_MAX_ITERS = 100
 IK_MATCH_ORIENTATION = False  # False = position-priority IK (recommended for stable retargeting)
 IK_POS_TOL_M = 0.03  # IK frame considered successful if position error <= this
 
+# Joint orientation convention correction for first 5 action joints.
+# Formula (if enabled): q_out = sign * q_in + deg2rad(offset_deg)
+APPLY_JOINT_ORIENTATION_CORRECTION = True
+ARM_JOINT_SIGNS = np.array([1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float64)
+ARM_JOINT_OFFSETS_DEG = np.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+
 # Frame transforms (UMI base -> SO-101 base, and UMI TCP -> SO TCP)
 # Keep identity initially; update from calibration when available.
 T_SO_BASE_FROM_UMI_BASE = np.eye(4, dtype=np.float64)
@@ -215,6 +221,25 @@ def normalize_gripper(width_values: np.ndarray, invert: bool = False) -> tuple[n
     if invert:
         norm = 1.0 - norm
     return norm.astype(np.float32), {'min': g_min, 'max': g_max, 'invert': invert}
+
+
+def joint_orientation_arrays() -> tuple[np.ndarray, np.ndarray]:
+    signs = np.asarray(ARM_JOINT_SIGNS, dtype=np.float64).reshape(-1)
+    offsets_deg = np.asarray(ARM_JOINT_OFFSETS_DEG, dtype=np.float64).reshape(-1)
+    check(signs.shape == (5,), 'ARM_JOINT_SIGNS must have exactly 5 values')
+    check(offsets_deg.shape == (5,), 'ARM_JOINT_OFFSETS_DEG must have exactly 5 values')
+    return signs, offsets_deg
+
+
+def apply_joint_orientation_correction(action_6: np.ndarray) -> np.ndarray:
+    out = np.asarray(action_6, dtype=np.float64).copy()
+    check(out.ndim == 2 and out.shape[1] >= 6, 'action must have shape [N, >=6]')
+    if not APPLY_JOINT_ORIENTATION_CORRECTION:
+        return out.astype(np.float32)
+
+    signs, offsets_deg = joint_orientation_arrays()
+    out[:, :5] = out[:, :5] * signs.reshape(1, 5) + np.deg2rad(offsets_deg).reshape(1, 5)
+    return out.astype(np.float32)
 
 
 register_umi_codecs()
@@ -580,7 +605,11 @@ for plan in conversion_plan:
     else:
         raise ValueError(f'Unknown RETARGET_MODE: {RETARGET_MODE}')
 
+    action = apply_joint_orientation_correction(action)
     state = action.copy()
+    notes.append(f'joint_orientation_applied={APPLY_JOINT_ORIENTATION_CORRECTION}')
+    notes.append(f'joint_signs={np.asarray(ARM_JOINT_SIGNS, dtype=np.float64).tolist()}')
+    notes.append(f'joint_offsets_deg={np.asarray(ARM_JOINT_OFFSETS_DEG, dtype=np.float64).tolist()}')
 
     # Step 4 consistency checks now that we have aligned arrays
     ts = plan['timestamps']
@@ -742,8 +771,50 @@ for ep in episode_payloads:
 writer_ds.finalize()
 print('Finalize completed')
 
+# Persist orientation convention metadata for replay consistency.
+signs_cfg, offsets_deg_cfg = joint_orientation_arrays()
+if APPLY_JOINT_ORIENTATION_CORRECTION:
+    replay_signs = np.ones((5,), dtype=np.float64)
+    replay_offsets_deg = np.zeros((5,), dtype=np.float64)
+else:
+    replay_signs = signs_cfg.copy()
+    replay_offsets_deg = offsets_deg_cfg.copy()
+
+orientation_meta = {
+    'version': 1,
+    'applied_in_dataset': bool(APPLY_JOINT_ORIENTATION_CORRECTION),
+    'joint_names': ACTION_NAMES[:5],
+    'dataset_joint_signs': [float(x) for x in signs_cfg.tolist()],
+    'dataset_joint_offsets_deg': [float(x) for x in offsets_deg_cfg.tolist()],
+    'dataset_joint_offsets_rad': [float(x) for x in np.deg2rad(offsets_deg_cfg).tolist()],
+    'replay_joint_signs': [float(x) for x in replay_signs.tolist()],
+    'replay_joint_offsets_deg': [float(x) for x in replay_offsets_deg.tolist()],
+    'formula': 'q_dataset = signs * q_raw + deg2rad(offset_deg) on action[:5]',
+}
+orientation_meta_path = OUTPUT_ROOT / 'meta' / 'retarget_orientation.json'
+orientation_meta_path.write_text(json.dumps(orientation_meta, indent=2), encoding='utf-8')
+print('Wrote orientation metadata:', orientation_meta_path)
+
+# Verify orientation metadata is self-consistent for replay.
+orientation_loaded = json.loads(orientation_meta_path.read_text())
+loaded_dataset_signs = np.asarray(orientation_loaded['dataset_joint_signs'], dtype=np.float64)
+loaded_dataset_offsets_deg = np.asarray(orientation_loaded['dataset_joint_offsets_deg'], dtype=np.float64)
+loaded_replay_signs = np.asarray(orientation_loaded['replay_joint_signs'], dtype=np.float64)
+loaded_replay_offsets_deg = np.asarray(orientation_loaded['replay_joint_offsets_deg'], dtype=np.float64)
+check(loaded_dataset_signs.shape == (5,), 'orientation metadata dataset_joint_signs has shape (5,)')
+check(loaded_dataset_offsets_deg.shape == (5,), 'orientation metadata dataset_joint_offsets_deg has shape (5,)')
+check(loaded_replay_signs.shape == (5,), 'orientation metadata replay_joint_signs has shape (5,)')
+check(loaded_replay_offsets_deg.shape == (5,), 'orientation metadata replay_joint_offsets_deg has shape (5,)')
+if APPLY_JOINT_ORIENTATION_CORRECTION:
+    check(np.allclose(loaded_replay_signs, 1.0), 'replay correction is identity when orientation was applied in dataset')
+    check(np.allclose(loaded_replay_offsets_deg, 0.0), 'replay offsets are zero when orientation was applied in dataset')
+else:
+    check(np.allclose(loaded_replay_signs, signs_cfg), 'replay signs match dataset orientation config when not pre-applied')
+    check(np.allclose(loaded_replay_offsets_deg, offsets_deg_cfg), 'replay offsets match dataset orientation config when not pre-applied')
+
 # Step 6 file-level checks
 check((OUTPUT_ROOT / 'meta' / 'info.json').exists(), 'meta/info.json exists')
+check((OUTPUT_ROOT / 'meta' / 'retarget_orientation.json').exists(), 'meta/retarget_orientation.json exists')
 parquet_files = sorted((OUTPUT_ROOT / 'data').glob('*/*.parquet'))
 video_files = sorted((OUTPUT_ROOT / 'videos').glob('*/*/*.mp4'))
 check(len(parquet_files) >= 1, 'at least one parquet file exists')

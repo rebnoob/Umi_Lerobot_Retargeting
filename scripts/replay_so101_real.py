@@ -39,6 +39,7 @@ ALL_MOTORS = ARM_MOTORS + ["gripper"]
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATASET_ROOT = PROJECT_ROOT / "outputs" / "datasets" / "lerobot_umi_pick_cube_so101_v3"
 DEFAULT_LEROBOT_SRC = PROJECT_ROOT / "lerobot" / "src"
+DEFAULT_ORIENTATION_META_NAME = "retarget_orientation.json"
 DEFAULT_REST_ARM_DEG = [0.0, 0.0, 0.0, 0.0, 0.0]
 DEFAULT_REST_GRIPPER = 100.0
 DEFAULT_ARM_SIGNS = [1.0, 1.0, 1.0, 1.0, 1.0]
@@ -158,6 +159,21 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="0,0,0,0,0",
         help="Per-joint additive offsets in degrees for case-specific orientation: five comma-separated values.",
+    )
+    parser.add_argument(
+        "--orientation-source",
+        choices=["auto", "metadata", "cli"],
+        default="auto",
+        help=(
+            "How to choose arm orientation correction. "
+            "'auto' uses metadata if available unless CLI values are explicitly set."
+        ),
+    )
+    parser.add_argument(
+        "--orientation-meta",
+        type=Path,
+        default=None,
+        help="Optional explicit path to retarget orientation metadata JSON.",
     )
     parser.add_argument(
         "--max-relative-target-deg",
@@ -361,6 +377,112 @@ def parse_five_floats(raw: str, label: str, default: list[float]) -> np.ndarray:
         raise ValueError(f"Invalid float values for {label}: {raw!r}") from exc
 
 
+def parse_five_from_meta(meta: dict[str, Any], key: str) -> np.ndarray:
+    if key not in meta:
+        raise KeyError(f"Orientation metadata missing key: {key}")
+    vals = np.asarray(meta[key], dtype=np.float64).reshape(-1)
+    if vals.shape != (5,):
+        raise ValueError(f"Orientation metadata key '{key}' must have 5 values, got {vals.shape}")
+    return vals
+
+
+def load_orientation_meta(meta_path: Path) -> dict[str, Any] | None:
+    if not meta_path.exists():
+        return None
+    data = json.loads(meta_path.read_text())
+    # Validate expected keys when present.
+    if "replay_joint_signs" in data:
+        _ = parse_five_from_meta(data, "replay_joint_signs")
+    if "replay_joint_offsets_deg" in data:
+        _ = parse_five_from_meta(data, "replay_joint_offsets_deg")
+    if "dataset_joint_signs" in data:
+        _ = parse_five_from_meta(data, "dataset_joint_signs")
+    if "dataset_joint_offsets_deg" in data:
+        _ = parse_five_from_meta(data, "dataset_joint_offsets_deg")
+    return data
+
+
+def correction_from_orientation_meta(meta: dict[str, Any]) -> tuple[np.ndarray, np.ndarray, str]:
+    has_replay = "replay_joint_signs" in meta or "replay_joint_offsets_deg" in meta
+    if has_replay:
+        signs = (
+            parse_five_from_meta(meta, "replay_joint_signs")
+            if "replay_joint_signs" in meta
+            else np.asarray(DEFAULT_ARM_SIGNS, dtype=np.float64)
+        )
+        offsets = (
+            parse_five_from_meta(meta, "replay_joint_offsets_deg")
+            if "replay_joint_offsets_deg" in meta
+            else np.asarray(DEFAULT_ARM_OFFSETS_DEG, dtype=np.float64)
+        )
+        return signs, offsets, "replay_joint_*"
+
+    # Backward-compatible behavior for older metadata:
+    # if data was already orientation-corrected before writing, replay should be identity.
+    if bool(meta.get("applied_in_dataset", False)):
+        return (
+            np.ones((5,), dtype=np.float64),
+            np.zeros((5,), dtype=np.float64),
+            "applied_in_dataset(identity)",
+        )
+
+    if "dataset_joint_signs" in meta or "dataset_joint_offsets_deg" in meta:
+        signs = (
+            parse_five_from_meta(meta, "dataset_joint_signs")
+            if "dataset_joint_signs" in meta
+            else np.asarray(DEFAULT_ARM_SIGNS, dtype=np.float64)
+        )
+        offsets = (
+            parse_five_from_meta(meta, "dataset_joint_offsets_deg")
+            if "dataset_joint_offsets_deg" in meta
+            else np.asarray(DEFAULT_ARM_OFFSETS_DEG, dtype=np.float64)
+        )
+        return signs, offsets, "dataset_joint_*"
+
+    return (
+        np.asarray(DEFAULT_ARM_SIGNS, dtype=np.float64),
+        np.asarray(DEFAULT_ARM_OFFSETS_DEG, dtype=np.float64),
+        "defaults",
+    )
+
+
+def resolve_orientation_correction(
+    args: argparse.Namespace,
+    dataset_root: Path,
+    cli_signs: np.ndarray,
+    cli_offsets_deg: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, str]:
+    meta_path = args.orientation_meta
+    if meta_path is None:
+        meta_path = dataset_root / "meta" / DEFAULT_ORIENTATION_META_NAME
+    meta = load_orientation_meta(meta_path)
+
+    cli_default_signs = np.asarray(DEFAULT_ARM_SIGNS, dtype=np.float64)
+    cli_default_offsets = np.asarray(DEFAULT_ARM_OFFSETS_DEG, dtype=np.float64)
+    cli_is_explicit = not (
+        np.allclose(cli_signs, cli_default_signs) and np.allclose(cli_offsets_deg, cli_default_offsets)
+    )
+
+    if args.orientation_source == "cli":
+        return cli_signs, cli_offsets_deg, "cli"
+
+    if args.orientation_source == "metadata":
+        if meta is None:
+            raise FileNotFoundError(
+                f"--orientation-source=metadata but metadata file not found: {meta_path}"
+            )
+        signs, offsets, key_source = correction_from_orientation_meta(meta)
+        return signs, offsets, f"metadata({key_source}):{meta_path}"
+
+    # auto
+    if cli_is_explicit:
+        return cli_signs, cli_offsets_deg, "cli(explicit)"
+    if meta is not None:
+        signs, offsets, key_source = correction_from_orientation_meta(meta)
+        return signs, offsets, f"metadata(auto,{key_source}):{meta_path}"
+    return cli_signs, cli_offsets_deg, "cli(default)"
+
+
 def move_linear(
     robot,
     mapped_names: list[str],
@@ -413,8 +535,14 @@ def main() -> int:
     src_indices = infer_source_indices(action_names)
     arm_unit = detect_arm_unit(actions, args.arm_unit)
     gripper_unit = detect_gripper_unit(actions, src_indices["gripper"], args.gripper_unit)
-    arm_signs = parse_five_floats(args.arm_signs, "--arm-signs", DEFAULT_ARM_SIGNS)
-    arm_offsets_deg = parse_five_floats(args.arm_offsets_deg, "--arm-offsets-deg", DEFAULT_ARM_OFFSETS_DEG)
+    cli_arm_signs = parse_five_floats(args.arm_signs, "--arm-signs", DEFAULT_ARM_SIGNS)
+    cli_arm_offsets_deg = parse_five_floats(args.arm_offsets_deg, "--arm-offsets-deg", DEFAULT_ARM_OFFSETS_DEG)
+    arm_signs, arm_offsets_deg, orientation_source = resolve_orientation_correction(
+        args=args,
+        dataset_root=args.dataset_root,
+        cli_signs=cli_arm_signs,
+        cli_offsets_deg=cli_arm_offsets_deg,
+    )
     rest_arm_deg = parse_five_floats(args.rest_arm_deg, "--rest-arm-deg", DEFAULT_REST_ARM_DEG)
     rest_gripper = float(np.clip(args.rest_gripper, 0.0, 100.0))
 
@@ -460,6 +588,7 @@ def main() -> int:
         f"signs={np.round(arm_signs, 3).tolist()} "
         f"offsets_deg={np.round(arm_offsets_deg, 3).tolist()}"
     )
+    print(f"Orientation source: {orientation_source}")
     print(
         "Rest pose: "
         f"arm_deg={np.round(rest_arm_deg, 3).tolist()} "

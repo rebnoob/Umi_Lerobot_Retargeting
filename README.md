@@ -88,8 +88,8 @@ python scripts/replay_so101_real.py \
 ```
 
 ```bash
-python /Users/rebnoob/Downloads/Umi\ Data/scripts/replay_so101_real.py \
-  --dataset-root /Users/rebnoob/Downloads/Umi\ Data/outputs/datasets/lerobot_umi_pick_cube_so101_v3 \
+python scripts/replay_so101_real.py \
+  --dataset-root "outputs/datasets/lerobot_umi_pick_cube_so101_v3" \
   --episode 0 \
   --port /dev/ttyACM0 \
   --robot-id so101_real \
@@ -111,6 +111,10 @@ python /Users/rebnoob/Downloads/Umi\ Data/scripts/replay_so101_real.py \
 - `--skip-calibrate`: skip automatic calibration prompt (use only if already calibrated).
 - `--arm-signs` and `--arm-offsets-deg`: per-case orientation correction.
   Example: `--arm-signs 1,-1,1,1,1 --arm-offsets-deg 0,90,-90,0,0`
+- `--orientation-source auto|metadata|cli`: orientation correction source.
+  Default `auto` prefers dataset metadata (`meta/retarget_orientation.json`) when available.
+  Backward-compatible metadata is supported: if `applied_in_dataset=true`, replay uses identity correction.
+- `--orientation-meta /path/to/retarget_orientation.json`: explicit metadata file path.
 
 ## Verify Folder Compatibility
 
