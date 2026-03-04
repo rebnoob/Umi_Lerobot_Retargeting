@@ -64,8 +64,9 @@ Use:
 This script converts the retargeted dataset action format (`joint_1..joint_5, gripper`) into SO-101 motor commands (`*.pos`) and handles unit conversion (radians to degrees, gripper 0-1 to 0-100).
 By default it now:
 - moves to SO-101 rest pose first,
-- then moves to the first replay action,
-- then starts replay.
+- then moves to the first replay action (start pose),
+- holds briefly at start pose,
+- then starts replay from frame 2.
 
 ### 1) Dry-run (no motor movement)
 
@@ -86,12 +87,27 @@ python scripts/replay_so101_real.py \
   --execute
 ```
 
+```bash
+python /Users/rebnoob/Downloads/Umi\ Data/scripts/replay_so101_real.py \
+  --dataset-root /Users/rebnoob/Downloads/Umi\ Data/outputs/datasets/lerobot_umi_pick_cube_so101_v3 \
+  --episode 0 \
+  --port /dev/ttyACM0 \
+  --robot-id so101_real \
+  --go-to-rest-seconds 2.5 \
+  --go-to-start-seconds 2.0 \
+  --hold-start-seconds 1.0 \
+  --arm-signs 1,-1,1,1,1 \
+  --arm-offsets-deg 0,90,-90,0,0 \
+  --execute
+```
 ### 3) Useful safety flags
 
 - `--max-relative-target-deg 5`: clamp per-step arm motion to 5 degrees.
 - `--max-relative-target-gripper 12`: clamp per-step gripper change.
 - `--go-to-rest-seconds 2.5`: smooth move to rest pose before replay.
 - `--go-to-start-seconds 2.0`: smoothly move from current pose to first replay frame.
+- `--hold-start-seconds 0.5`: hold at first replay pose before replay starts.
+- `--replay-from-start`: replay from frame 1 again (default starts from frame 2).
 - `--skip-calibrate`: skip automatic calibration prompt (use only if already calibrated).
 - `--arm-signs` and `--arm-offsets-deg`: per-case orientation correction.
   Example: `--arm-signs 1,-1,1,1,1 --arm-offsets-deg 0,90,-90,0,0`

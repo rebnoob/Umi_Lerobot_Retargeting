@@ -114,6 +114,12 @@ def parse_args() -> argparse.Namespace:
         help="Smoothly interpolate from current pose to first replay action over this duration.",
     )
     parser.add_argument(
+        "--hold-start-seconds",
+        type=float,
+        default=0.5,
+        help="Time to hold at first replay action before starting replay.",
+    )
+    parser.add_argument(
         "--go-to-rest-seconds",
         type=float,
         default=2.5,
@@ -123,6 +129,11 @@ def parse_args() -> argparse.Namespace:
         "--skip-rest",
         action="store_true",
         help="Skip moving to rest pose before replay (not recommended).",
+    )
+    parser.add_argument(
+        "--replay-from-start",
+        action="store_true",
+        help="Replay again from frame 0 after moving to first action. Default is to start from frame 1.",
     )
     parser.add_argument(
         "--rest-arm-deg",
@@ -395,6 +406,8 @@ def main() -> int:
         raise ValueError("--stride must be >= 1")
     if args.print_every < 1:
         raise ValueError("--print-every must be >= 1")
+    if args.hold_start_seconds < 0:
+        raise ValueError("--hold-start-seconds must be >= 0")
 
     actions, action_names, dataset_fps = load_episode_actions(args.dataset_root, args.episode)
     src_indices = infer_source_indices(action_names)
@@ -513,9 +526,18 @@ def main() -> int:
             label="Moving to first replay action",
         )
 
+        if args.hold_start_seconds > 0:
+            print(f"Holding at start pose for {args.hold_start_seconds:.2f}s...")
+            precise_sleep(args.hold_start_seconds)
+
         print("\nStarting replay...")
         total = mapped_actions.shape[0]
-        for i, cmd_vec in enumerate(mapped_actions, start=1):
+        replay_start_idx = 0 if args.replay_from_start else 1
+        if replay_start_idx >= total:
+            replay_start_idx = 0
+        if replay_start_idx == 1:
+            print("Replay starts from frame 2 (frame 1 used as start pose).")
+        for i, cmd_vec in enumerate(mapped_actions[replay_start_idx:], start=replay_start_idx + 1):
             t0 = time.perf_counter()
             cmd = {k: float(v) for k, v in zip(mapped_names, cmd_vec, strict=True)}
             robot.send_action(cmd)
