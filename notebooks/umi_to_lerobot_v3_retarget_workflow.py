@@ -91,6 +91,8 @@ SO101_URDF_PATH = WORKSPACE_ROOT / "assets" / "urdf" / "so101_new_calib.urdf"  #
 IK_ACTIVE_LINK_MASK = None  # e.g. [False, True, True, True, True, True, False]
 IK_ARM_ACTIVE_INDICES = None  # indices into active joints for q1..q5; None -> first 5 active joints
 IK_MAX_ITERS = 100
+IK_MATCH_ORIENTATION = False  # False = position-priority IK (recommended for stable retargeting)
+IK_POS_TOL_M = 0.03  # IK frame considered successful if position error <= this
 
 # Frame transforms (UMI base -> SO-101 base, and UMI TCP -> SO TCP)
 # Keep identity initially; update from calibration when available.
@@ -450,10 +452,14 @@ def try_make_ik_chain(urdf_path: Path, active_links_mask=None):
     from ikpy.chain import Chain
 
     chain = Chain.from_urdf_file(str(urdf_path), active_links_mask=active_links_mask)
-    active_joint_indices = [
-        i for i, is_active in enumerate(chain.active_links_mask) if is_active
+    # IKPy active_links_mask can include fixed links depending on URDF defaults.
+    # We always derive controllable joints from non-fixed links to keep action mapping stable.
+    movable_joint_indices = [
+        i for i, link in enumerate(chain.links) if getattr(link, 'joint_type', 'fixed') != 'fixed'
     ]
-    return chain, active_joint_indices
+    if active_links_mask is not None:
+        movable_joint_indices = [i for i in movable_joint_indices if bool(active_links_mask[i])]
+    return chain, movable_joint_indices
 
 
 def retarget_ik(abs_indices: np.ndarray) -> tuple[np.ndarray, dict, list[str], float, float | None]:
@@ -461,13 +467,18 @@ def retarget_ik(abs_indices: np.ndarray) -> tuple[np.ndarray, dict, list[str], f
     urdf_path = Path(SO101_URDF_PATH)
     check(urdf_path.exists(), f'URDF path exists: {urdf_path}')
 
-    chain, active_joint_indices = try_make_ik_chain(urdf_path, IK_ACTIVE_LINK_MASK)
+    chain, movable_joint_indices = try_make_ik_chain(urdf_path, IK_ACTIVE_LINK_MASK)
     if IK_ARM_ACTIVE_INDICES is None:
-        arm_sel = list(range(min(5, len(active_joint_indices))))
+        arm_sel = list(range(min(5, len(movable_joint_indices))))
     else:
         arm_sel = list(IK_ARM_ACTIVE_INDICES)
 
+    check(len(movable_joint_indices) >= 5, f'URDF must have >=5 movable joints, got {len(movable_joint_indices)}')
     check(len(arm_sel) == 5, 'IK arm selection must produce 5 joints')
+    check(
+        all(0 <= j < len(movable_joint_indices) for j in arm_sel),
+        'IK arm selection indices must be valid for movable joints',
+    )
 
     pos_all = np.asarray(umi_data['robot0_eef_pos'], dtype=np.float64)
     rot_all = np.asarray(umi_data['robot0_eef_rot_axis_angle'], dtype=np.float64)
@@ -482,38 +493,56 @@ def retarget_ik(abs_indices: np.ndarray) -> tuple[np.ndarray, dict, list[str], f
     for i, idx in enumerate(abs_indices):
         T_umi_tcp = build_pose_hmat(pos_all[idx], rot_all[idx])
         T_so_tcp = T_SO_BASE_FROM_UMI_BASE @ T_umi_tcp @ T_SO_TCP_FROM_UMI_TCP
+        target_pos = T_so_tcp[:3, 3]
+        if IK_MATCH_ORIENTATION:
+            q_sol = chain.inverse_kinematics_frame(T_so_tcp, initial_position=q_full, max_iter=IK_MAX_ITERS)
+        else:
+            # Position-priority IK is more stable for retargeting when orientation frames are uncertain.
+            q_sol = chain.inverse_kinematics(target_position=target_pos, initial_position=q_full, max_iter=IK_MAX_ITERS)
 
-        q_sol = chain.inverse_kinematics_frame(T_so_tcp, initial_position=q_full, max_iter=IK_MAX_ITERS)
         T_fk_test = chain.forward_kinematics(q_sol)
-        err_test = float(np.linalg.norm(T_fk_test[:3, 3] - T_so_tcp[:3, 3]))
-        if err_test > 0.05:
-            q_rec = np.zeros(len(chain.links), dtype=np.float64)
-            if len(active_joint_indices) >= 3:
-                q_rec[active_joint_indices[1]] = -1.0
-                q_rec[active_joint_indices[2]] = 1.0
-            q_sol2 = chain.inverse_kinematics_frame(T_so_tcp, initial_position=q_rec, max_iter=IK_MAX_ITERS * 2)
-            T_fk2 = chain.forward_kinematics(q_sol2)
-            err2 = float(np.linalg.norm(T_fk2[:3, 3] - T_so_tcp[:3, 3]))
-            if err2 < err_test:
-                q_sol = q_sol2
-        if np.all(np.isfinite(q_sol)):
-            ok += 1
-            q_full = q_sol
+        err_test = float(np.linalg.norm(T_fk_test[:3, 3] - target_pos))
 
-        active_values = q_full[active_joint_indices]
-        q5 = np.array([active_values[j] for j in arm_sel], dtype=np.float32)
+        if err_test > IK_POS_TOL_M:
+            q_seed = np.zeros(len(chain.links), dtype=np.float64)
+            if len(movable_joint_indices) >= 3:
+                q_seed[movable_joint_indices[1]] = -1.0
+                q_seed[movable_joint_indices[2]] = 1.0
+            if IK_MATCH_ORIENTATION:
+                q_try = chain.inverse_kinematics_frame(T_so_tcp, initial_position=q_seed, max_iter=IK_MAX_ITERS * 2)
+            else:
+                q_try = chain.inverse_kinematics(target_position=target_pos, initial_position=q_seed, max_iter=IK_MAX_ITERS * 2)
+            T_fk_try = chain.forward_kinematics(q_try)
+            err_try = float(np.linalg.norm(T_fk_try[:3, 3] - target_pos))
+            if err_try < err_test:
+                q_sol = q_try
+                err_test = err_try
+
+        if np.all(np.isfinite(q_sol)):
+            q_full = q_sol
+            if err_test <= IK_POS_TOL_M:
+                ok += 1
+
+        movable_values = q_full[movable_joint_indices]
+        q5 = np.array([movable_values[j] for j in arm_sel], dtype=np.float32)
 
         action[i, :5] = q5
         action[i, 5] = g[i]
 
         # FK position error check
         T_fk = chain.forward_kinematics(q_full)
-        pos_err = float(np.linalg.norm(T_fk[:3, 3] - T_so_tcp[:3, 3]))
+        pos_err = float(np.linalg.norm(T_fk[:3, 3] - target_pos))
         fk_errs.append(pos_err)
 
     success_rate = ok / max(len(abs_indices), 1)
     mean_fk = float(np.mean(fk_errs)) if fk_errs else None
-    notes = [f'IK from URDF={urdf_path}', f'gripper_norm={g_stats}']
+    notes = [
+        f'IK from URDF={urdf_path}',
+        f'ik_match_orientation={IK_MATCH_ORIENTATION}',
+        f'movable_joint_indices={movable_joint_indices}',
+        f'arm_selection={arm_sel}',
+        f'gripper_norm={g_stats}',
+    ]
     return action, g_stats, notes, success_rate, mean_fk
 
 
@@ -601,7 +630,7 @@ check(len(episode_payloads) == len(conversion_plan), 'retarget produced payload 
 check(report.max_abs_joint_step < 1e6, 'continuity sanity check passed (finite joint-step bound)')
 
 if report.mode == 'ik':
-    check(report.ik_success_rate > 0.90, f'IK success rate > 90% (actual={report.ik_success_rate:.3f})')
+    check(report.ik_success_rate > 0.80, f'IK success rate > 80% (actual={report.ik_success_rate:.3f})')
     if report.ik_mean_fk_pos_err_m is not None:
         print(f'IK mean FK position error: {report.ik_mean_fk_pos_err_m:.6f} m')
 
