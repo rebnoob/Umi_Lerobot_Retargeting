@@ -39,6 +39,10 @@ ALL_MOTORS = ARM_MOTORS + ["gripper"]
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATASET_ROOT = PROJECT_ROOT / "outputs" / "datasets" / "lerobot_umi_pick_cube_so101_v3"
 DEFAULT_LEROBOT_SRC = PROJECT_ROOT / "lerobot" / "src"
+DEFAULT_REST_ARM_DEG = [0.0, 0.0, 0.0, 0.0, 0.0]
+DEFAULT_REST_GRIPPER = 100.0
+DEFAULT_ARM_SIGNS = [1.0, 1.0, 1.0, 1.0, 1.0]
+DEFAULT_ARM_OFFSETS_DEG = [0.0, 0.0, 0.0, 0.0, 0.0]
 
 
 def parse_args() -> argparse.Namespace:
@@ -108,6 +112,41 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=2.0,
         help="Smoothly interpolate from current pose to first replay action over this duration.",
+    )
+    parser.add_argument(
+        "--go-to-rest-seconds",
+        type=float,
+        default=2.5,
+        help="Duration to move from current pose to SO-101 rest pose before replay.",
+    )
+    parser.add_argument(
+        "--skip-rest",
+        action="store_true",
+        help="Skip moving to rest pose before replay (not recommended).",
+    )
+    parser.add_argument(
+        "--rest-arm-deg",
+        type=str,
+        default="0,0,0,0,0",
+        help="SO-101 rest arm joint targets in degrees: shoulder_pan,shoulder_lift,elbow_flex,wrist_flex,wrist_roll.",
+    )
+    parser.add_argument(
+        "--rest-gripper",
+        type=float,
+        default=DEFAULT_REST_GRIPPER,
+        help="SO-101 rest gripper target in percent [0,100].",
+    )
+    parser.add_argument(
+        "--arm-signs",
+        type=str,
+        default="1,1,1,1,1",
+        help="Per-joint sign correction for case-specific orientation: five comma-separated values.",
+    )
+    parser.add_argument(
+        "--arm-offsets-deg",
+        type=str,
+        default="0,0,0,0,0",
+        help="Per-joint additive offsets in degrees for case-specific orientation: five comma-separated values.",
     )
     parser.add_argument(
         "--max-relative-target-deg",
@@ -242,13 +281,20 @@ def build_motor_action(
     arm_unit: str,
     gripper_unit: str,
     invert_gripper: bool,
+    arm_signs: np.ndarray,
+    arm_offsets_deg: np.ndarray,
 ) -> dict[str, float]:
-    out: dict[str, float] = {}
-    for motor in ARM_MOTORS:
+    arm_vals = np.zeros((5,), dtype=np.float64)
+    for j, motor in enumerate(ARM_MOTORS):
         val = float(action_row[src_indices[motor]])
         if arm_unit == "radians":
             val = float(np.degrees(val))
-        out[f"{motor}.pos"] = val
+        arm_vals[j] = val
+    arm_vals = arm_vals * arm_signs + arm_offsets_deg
+
+    out: dict[str, float] = {}
+    for j, motor in enumerate(ARM_MOTORS):
+        out[f"{motor}.pos"] = float(arm_vals[j])
 
     g = float(action_row[src_indices["gripper"]])
     if gripper_unit == "zero_one":
@@ -291,6 +337,44 @@ def precise_sleep(seconds: float) -> None:
         time.sleep(seconds)
 
 
+def parse_five_floats(raw: str, label: str, default: list[float]) -> np.ndarray:
+    txt = raw.strip()
+    if txt == "":
+        return np.asarray(default, dtype=np.float64)
+    parts = [p.strip() for p in txt.split(",") if p.strip() != ""]
+    if len(parts) != 5:
+        raise ValueError(f"{label} must contain exactly 5 comma-separated values, got: {raw!r}")
+    try:
+        return np.asarray([float(x) for x in parts], dtype=np.float64)
+    except ValueError as exc:
+        raise ValueError(f"Invalid float values for {label}: {raw!r}") from exc
+
+
+def move_linear(
+    robot,
+    mapped_names: list[str],
+    start: np.ndarray,
+    target: np.ndarray,
+    seconds: float,
+    fps: float,
+    label: str,
+) -> None:
+    if seconds <= 0:
+        cmd = {k: float(v) for k, v in zip(mapped_names, target, strict=True)}
+        robot.send_action(cmd)
+        precise_sleep(0.2)
+        return
+
+    n_steps = max(int(seconds * fps), 2)
+    print(f"{label} over {seconds:.2f}s ({n_steps} interpolation steps)...")
+    for i in range(1, n_steps + 1):
+        a = i / n_steps
+        cmd_vec = (1.0 - a) * start + a * target
+        cmd = {k: float(v) for k, v in zip(mapped_names, cmd_vec, strict=True)}
+        robot.send_action(cmd)
+        precise_sleep(1.0 / fps)
+
+
 def print_preview(mapped_actions: np.ndarray, mapped_names: list[str], fps: float, is_execute: bool) -> None:
     print("Replay summary")
     print(f"  execute: {is_execute}")
@@ -316,6 +400,10 @@ def main() -> int:
     src_indices = infer_source_indices(action_names)
     arm_unit = detect_arm_unit(actions, args.arm_unit)
     gripper_unit = detect_gripper_unit(actions, src_indices["gripper"], args.gripper_unit)
+    arm_signs = parse_five_floats(args.arm_signs, "--arm-signs", DEFAULT_ARM_SIGNS)
+    arm_offsets_deg = parse_five_floats(args.arm_offsets_deg, "--arm-offsets-deg", DEFAULT_ARM_OFFSETS_DEG)
+    rest_arm_deg = parse_five_floats(args.rest_arm_deg, "--rest-arm-deg", DEFAULT_REST_ARM_DEG)
+    rest_gripper = float(np.clip(args.rest_gripper, 0.0, 100.0))
 
     replay_fps = float(args.fps if args.fps is not None else dataset_fps)
     if replay_fps <= 0:
@@ -330,6 +418,8 @@ def main() -> int:
             arm_unit=arm_unit,
             gripper_unit=gripper_unit,
             invert_gripper=args.invert_gripper,
+            arm_signs=arm_signs,
+            arm_offsets_deg=arm_offsets_deg,
         )
         mapped.append(
             [
@@ -352,6 +442,16 @@ def main() -> int:
     ]
 
     print(f"Inferred units: arm={arm_unit}, gripper={gripper_unit}")
+    print(
+        "Case orientation correction: "
+        f"signs={np.round(arm_signs, 3).tolist()} "
+        f"offsets_deg={np.round(arm_offsets_deg, 3).tolist()}"
+    )
+    print(
+        "Rest pose: "
+        f"arm_deg={np.round(rest_arm_deg, 3).tolist()} "
+        f"gripper={rest_gripper:.1f}"
+    )
     print_preview(mapped_actions, mapped_names, replay_fps, args.execute)
 
     if not args.execute:
@@ -384,26 +484,34 @@ def main() -> int:
         raise RuntimeError("Robot failed to connect.")
 
     try:
-        first_cmd = {k: float(v) for k, v in zip(mapped_names, mapped_actions[0], strict=True)}
-        if args.go_to_start_seconds > 0:
-            obs = robot.get_observation()
-            now = np.array([float(obs[k]) for k in mapped_names], dtype=np.float64)
-            target = mapped_actions[0]
-            n_steps = max(int(args.go_to_start_seconds * replay_fps), 2)
-            print(
-                f"Moving to first replay action over {args.go_to_start_seconds:.2f}s "
-                f"({n_steps} interpolation steps)..."
+        obs = robot.get_observation()
+        now = np.array([float(obs[k]) for k in mapped_names], dtype=np.float64)
+
+        if not args.skip_rest:
+            rest_target = np.concatenate([rest_arm_deg, np.array([rest_gripper], dtype=np.float64)])
+            move_linear(
+                robot=robot,
+                mapped_names=mapped_names,
+                start=now,
+                target=rest_target,
+                seconds=args.go_to_rest_seconds,
+                fps=replay_fps,
+                label="Moving to SO-101 rest pose",
             )
-            for i in range(1, n_steps + 1):
-                a = i / n_steps
-                cmd_vec = (1.0 - a) * now + a * target
-                cmd = {k: float(v) for k, v in zip(mapped_names, cmd_vec, strict=True)}
-                robot.send_action(cmd)
-                precise_sleep(1.0 / replay_fps)
+            now = rest_target
         else:
-            print("Sending first replay action directly...")
-            robot.send_action(first_cmd)
-            precise_sleep(0.2)
+            print("Skipping rest pose move (--skip-rest was set).")
+
+        first_target = mapped_actions[0]
+        move_linear(
+            robot=robot,
+            mapped_names=mapped_names,
+            start=now,
+            target=first_target,
+            seconds=args.go_to_start_seconds,
+            fps=replay_fps,
+            label="Moving to first replay action",
+        )
 
         print("\nStarting replay...")
         total = mapped_actions.shape[0]
