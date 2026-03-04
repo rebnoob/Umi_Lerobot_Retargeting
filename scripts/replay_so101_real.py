@@ -21,6 +21,8 @@ import argparse
 import json
 import sys
 import time
+import warnings
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +46,7 @@ DEFAULT_REST_ARM_DEG = [0.0, 0.0, 0.0, 0.0, 0.0]
 DEFAULT_REST_GRIPPER = 100.0
 DEFAULT_ARM_SIGNS = [1.0, 1.0, 1.0, 1.0, 1.0]
 DEFAULT_ARM_OFFSETS_DEG = [0.0, 0.0, 0.0, 0.0, 0.0]
+DEFAULT_LIVE_URDF = PROJECT_ROOT / "assets" / "urdf" / "so101_new_calib.urdf"
 
 
 def parse_args() -> argparse.Namespace:
@@ -152,13 +155,33 @@ def parse_args() -> argparse.Namespace:
         "--arm-signs",
         type=str,
         default="1,1,1,1,1",
-        help="Per-joint sign correction for case-specific orientation: five comma-separated values.",
+        help="Data-space per-joint sign correction: five comma-separated values.",
     )
     parser.add_argument(
         "--arm-offsets-deg",
         type=str,
         default="0,0,0,0,0",
-        help="Per-joint additive offsets in degrees for case-specific orientation: five comma-separated values.",
+        help="Data-space per-joint additive offsets in degrees: five comma-separated values.",
+    )
+    parser.add_argument(
+        "--hardware-arm-signs",
+        type=str,
+        default="1,1,1,1,1",
+        help="Hardware-space per-joint sign correction: five comma-separated values.",
+    )
+    parser.add_argument(
+        "--hardware-arm-offsets-deg",
+        type=str,
+        default="0,0,0,0,0",
+        help="Hardware-space per-joint additive offsets in degrees: five comma-separated values.",
+    )
+    parser.add_argument(
+        "--flip-z",
+        action="store_true",
+        help=(
+            "Apply a hardware z-direction flip preset by negating joints "
+            "2,3,4 (shoulder_lift, elbow_flex, wrist_flex)."
+        ),
     )
     parser.add_argument(
         "--orientation-source",
@@ -198,6 +221,29 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=30,
         help="Print progress every N replayed frames.",
+    )
+    parser.add_argument(
+        "--live-motion",
+        action="store_true",
+        help="Show live 3D URDF TCP motion (commanded vs observed) during replay.",
+    )
+    parser.add_argument(
+        "--live-urdf",
+        type=Path,
+        default=DEFAULT_LIVE_URDF,
+        help="URDF used by --live-motion.",
+    )
+    parser.add_argument(
+        "--live-motion-every",
+        type=int,
+        default=1,
+        help="Update live motion viewer every N replayed frames.",
+    )
+    parser.add_argument(
+        "--live-motion-trail",
+        type=int,
+        default=180,
+        help="History length for live TCP trails.",
     )
     return parser.parse_args()
 
@@ -483,6 +529,187 @@ def resolve_orientation_correction(
     return cli_signs, cli_offsets_deg, "cli(default)"
 
 
+@dataclass
+class LiveMotionView:
+    fig: Any
+    ax3d: Any
+    axz: Any
+    cmd_line_3d: Any
+    obs_line_3d: Any
+    cmd_point_3d: Any
+    obs_point_3d: Any
+    cmd_line_z: Any
+    obs_line_z: Any
+    txt_status: Any
+    chain: Any
+    movable_indices: list[int]
+    trail: int
+    frames: list[int]
+    cmd_traj: list[np.ndarray]
+    obs_traj: list[np.ndarray]
+    z_cmd: list[float]
+    z_obs: list[float]
+
+
+def create_live_motion_view(urdf_path: Path, trail: int) -> LiveMotionView:
+    if not urdf_path.exists():
+        raise FileNotFoundError(f"--live-motion requested but URDF not found: {urdf_path}")
+    try:
+        import matplotlib.pyplot as plt
+        from ikpy.chain import Chain
+    except Exception as exc:
+        raise ModuleNotFoundError(
+            "--live-motion requires matplotlib and ikpy in this environment."
+        ) from exc
+
+    warnings.filterwarnings("ignore", category=UserWarning, module="ikpy")
+    chain = Chain.from_urdf_file(str(urdf_path))
+    movable = [i for i, link in enumerate(chain.links) if getattr(link, "joint_type", "fixed") != "fixed"]
+    if len(movable) < 5:
+        raise ValueError(f"Need >=5 movable joints in URDF for live motion, got {len(movable)}")
+    movable = movable[:5]
+
+    plt.ion()
+    fig = plt.figure(figsize=(11, 5))
+    ax3d = fig.add_subplot(1, 2, 1, projection="3d")
+    axz = fig.add_subplot(1, 2, 2)
+    fig.suptitle("SO-101 live replay debug")
+
+    cmd_line_3d, = ax3d.plot([], [], [], "b-", lw=2, label="cmd TCP")
+    obs_line_3d, = ax3d.plot([], [], [], "g-", lw=2, label="obs TCP")
+    cmd_point_3d, = ax3d.plot([], [], [], "bo", ms=6)
+    obs_point_3d, = ax3d.plot([], [], [], "go", ms=6)
+    ax3d.set_xlabel("X (m)")
+    ax3d.set_ylabel("Y (m)")
+    ax3d.set_zlabel("Z (m)")
+    ax3d.set_title("3D TCP trajectory")
+    ax3d.legend(loc="upper left")
+
+    cmd_line_z, = axz.plot([], [], "b-", lw=2, label="cmd Z")
+    obs_line_z, = axz.plot([], [], "g-", lw=2, label="obs Z")
+    axz.set_xlabel("Replay frame")
+    axz.set_ylabel("Z (m)")
+    axz.set_title("Z over time")
+    axz.grid(True, alpha=0.25)
+    axz.legend(loc="best")
+
+    txt_status = fig.text(0.5, 0.01, "", ha="center", va="bottom")
+    fig.tight_layout(rect=[0.0, 0.04, 1.0, 0.96])
+    fig.canvas.draw_idle()
+    fig.canvas.flush_events()
+    plt.show(block=False)
+
+    return LiveMotionView(
+        fig=fig,
+        ax3d=ax3d,
+        axz=axz,
+        cmd_line_3d=cmd_line_3d,
+        obs_line_3d=obs_line_3d,
+        cmd_point_3d=cmd_point_3d,
+        obs_point_3d=obs_point_3d,
+        cmd_line_z=cmd_line_z,
+        obs_line_z=obs_line_z,
+        txt_status=txt_status,
+        chain=chain,
+        movable_indices=movable,
+        trail=max(int(trail), 10),
+        frames=[],
+        cmd_traj=[],
+        obs_traj=[],
+        z_cmd=[],
+        z_obs=[],
+    )
+
+
+def fk_tcp_from_arm_deg(chain: Any, movable_indices: list[int], arm_deg: np.ndarray) -> np.ndarray:
+    q_full = np.zeros((len(chain.links),), dtype=np.float64)
+    arm_rad = np.deg2rad(np.asarray(arm_deg[:5], dtype=np.float64))
+    for j, idx in enumerate(movable_indices):
+        if j < arm_rad.shape[0]:
+            q_full[idx] = arm_rad[j]
+    T = chain.forward_kinematics(q_full)
+    return np.asarray(T[:3, 3], dtype=np.float64)
+
+
+def update_live_motion_view(
+    live: LiveMotionView,
+    frame_idx: int,
+    cmd_vec_deg: np.ndarray,
+    obs_vec_deg: np.ndarray,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    cmd_tcp = fk_tcp_from_arm_deg(live.chain, live.movable_indices, cmd_vec_deg)
+    obs_tcp = fk_tcp_from_arm_deg(live.chain, live.movable_indices, obs_vec_deg)
+
+    live.frames.append(int(frame_idx))
+    live.cmd_traj.append(cmd_tcp)
+    live.obs_traj.append(obs_tcp)
+    live.z_cmd.append(float(cmd_tcp[2]))
+    live.z_obs.append(float(obs_tcp[2]))
+
+    if len(live.frames) > live.trail:
+        live.frames.pop(0)
+        live.cmd_traj.pop(0)
+        live.obs_traj.pop(0)
+        live.z_cmd.pop(0)
+        live.z_obs.pop(0)
+
+    cmd_arr = np.asarray(live.cmd_traj)
+    obs_arr = np.asarray(live.obs_traj)
+    all_arr = np.vstack([cmd_arr, obs_arr])
+
+    live.cmd_line_3d.set_data(cmd_arr[:, 0], cmd_arr[:, 1])
+    live.cmd_line_3d.set_3d_properties(cmd_arr[:, 2])
+    live.obs_line_3d.set_data(obs_arr[:, 0], obs_arr[:, 1])
+    live.obs_line_3d.set_3d_properties(obs_arr[:, 2])
+    live.cmd_point_3d.set_data([cmd_arr[-1, 0]], [cmd_arr[-1, 1]])
+    live.cmd_point_3d.set_3d_properties([cmd_arr[-1, 2]])
+    live.obs_point_3d.set_data([obs_arr[-1, 0]], [obs_arr[-1, 1]])
+    live.obs_point_3d.set_3d_properties([obs_arr[-1, 2]])
+
+    margin = 0.03
+    xmin, ymin, zmin = np.min(all_arr, axis=0) - margin
+    xmax, ymax, zmax = np.max(all_arr, axis=0) + margin
+    if np.isclose(xmin, xmax):
+        xmin, xmax = xmin - 0.05, xmax + 0.05
+    if np.isclose(ymin, ymax):
+        ymin, ymax = ymin - 0.05, ymax + 0.05
+    if np.isclose(zmin, zmax):
+        zmin, zmax = zmin - 0.05, zmax + 0.05
+    live.ax3d.set_xlim(xmin, xmax)
+    live.ax3d.set_ylim(ymin, ymax)
+    live.ax3d.set_zlim(zmin, zmax)
+
+    f = np.asarray(live.frames, dtype=np.int64)
+    live.cmd_line_z.set_data(f, np.asarray(live.z_cmd, dtype=np.float64))
+    live.obs_line_z.set_data(f, np.asarray(live.z_obs, dtype=np.float64))
+    live.axz.set_xlim(max(int(f[0]), int(f[-1]) - live.trail), int(f[-1]) + 1)
+    z_join = np.asarray(live.z_cmd + live.z_obs, dtype=np.float64)
+    z_lo = float(np.min(z_join) - 0.02)
+    z_hi = float(np.max(z_join) + 0.02)
+    if np.isclose(z_lo, z_hi):
+        z_lo, z_hi = z_lo - 0.05, z_hi + 0.05
+    live.axz.set_ylim(z_lo, z_hi)
+
+    dz = float(obs_tcp[2] - cmd_tcp[2])
+    live.txt_status.set_text(f"frame={frame_idx} | cmd_z={cmd_tcp[2]:+.3f}m obs_z={obs_tcp[2]:+.3f}m dz={dz:+.3f}m")
+    live.fig.canvas.draw_idle()
+    live.fig.canvas.flush_events()
+    plt.pause(0.001)
+
+
+def close_live_motion_view(live: LiveMotionView | None) -> None:
+    if live is None:
+        return
+    try:
+        import matplotlib.pyplot as plt
+
+        plt.close(live.fig)
+    except Exception:
+        return
+
+
 def move_linear(
     robot,
     mapped_names: list[str],
@@ -528,6 +755,8 @@ def main() -> int:
         raise ValueError("--stride must be >= 1")
     if args.print_every < 1:
         raise ValueError("--print-every must be >= 1")
+    if args.live_motion_every < 1:
+        raise ValueError("--live-motion-every must be >= 1")
     if args.hold_start_seconds < 0:
         raise ValueError("--hold-start-seconds must be >= 0")
 
@@ -537,12 +766,22 @@ def main() -> int:
     gripper_unit = detect_gripper_unit(actions, src_indices["gripper"], args.gripper_unit)
     cli_arm_signs = parse_five_floats(args.arm_signs, "--arm-signs", DEFAULT_ARM_SIGNS)
     cli_arm_offsets_deg = parse_five_floats(args.arm_offsets_deg, "--arm-offsets-deg", DEFAULT_ARM_OFFSETS_DEG)
-    arm_signs, arm_offsets_deg, orientation_source = resolve_orientation_correction(
+    data_arm_signs, data_arm_offsets_deg, orientation_source = resolve_orientation_correction(
         args=args,
         dataset_root=args.dataset_root,
         cli_signs=cli_arm_signs,
         cli_offsets_deg=cli_arm_offsets_deg,
     )
+    hardware_arm_signs = parse_five_floats(
+        args.hardware_arm_signs, "--hardware-arm-signs", DEFAULT_ARM_SIGNS
+    )
+    hardware_arm_offsets_deg = parse_five_floats(
+        args.hardware_arm_offsets_deg, "--hardware-arm-offsets-deg", DEFAULT_ARM_OFFSETS_DEG
+    )
+    if args.flip_z:
+        # Hardware-specific quick fix for "vertical motion appears inverted":
+        # invert shoulder_lift, elbow_flex, wrist_flex.
+        hardware_arm_signs[1:4] *= -1.0
     rest_arm_deg = parse_five_floats(args.rest_arm_deg, "--rest-arm-deg", DEFAULT_REST_ARM_DEG)
     rest_gripper = float(np.clip(args.rest_gripper, 0.0, 100.0))
 
@@ -559,9 +798,14 @@ def main() -> int:
             arm_unit=arm_unit,
             gripper_unit=gripper_unit,
             invert_gripper=args.invert_gripper,
-            arm_signs=arm_signs,
-            arm_offsets_deg=arm_offsets_deg,
+            arm_signs=data_arm_signs,
+            arm_offsets_deg=data_arm_offsets_deg,
         )
+        cmd["shoulder_pan.pos"] = cmd["shoulder_pan.pos"] * hardware_arm_signs[0] + hardware_arm_offsets_deg[0]
+        cmd["shoulder_lift.pos"] = cmd["shoulder_lift.pos"] * hardware_arm_signs[1] + hardware_arm_offsets_deg[1]
+        cmd["elbow_flex.pos"] = cmd["elbow_flex.pos"] * hardware_arm_signs[2] + hardware_arm_offsets_deg[2]
+        cmd["wrist_flex.pos"] = cmd["wrist_flex.pos"] * hardware_arm_signs[3] + hardware_arm_offsets_deg[3]
+        cmd["wrist_roll.pos"] = cmd["wrist_roll.pos"] * hardware_arm_signs[4] + hardware_arm_offsets_deg[4]
         mapped.append(
             [
                 cmd["shoulder_pan.pos"],
@@ -584,9 +828,15 @@ def main() -> int:
 
     print(f"Inferred units: arm={arm_unit}, gripper={gripper_unit}")
     print(
-        "Case orientation correction: "
-        f"signs={np.round(arm_signs, 3).tolist()} "
-        f"offsets_deg={np.round(arm_offsets_deg, 3).tolist()}"
+        "Data orientation correction: "
+        f"signs={np.round(data_arm_signs, 3).tolist()} "
+        f"offsets_deg={np.round(data_arm_offsets_deg, 3).tolist()}"
+    )
+    print(
+        "Hardware orientation correction: "
+        f"signs={np.round(hardware_arm_signs, 3).tolist()} "
+        f"offsets_deg={np.round(hardware_arm_offsets_deg, 3).tolist()} "
+        f"(flip_z={args.flip_z})"
     )
     print(f"Orientation source: {orientation_source}")
     print(
@@ -625,7 +875,12 @@ def main() -> int:
     if not robot.is_connected:
         raise RuntimeError("Robot failed to connect.")
 
+    live: LiveMotionView | None = None
     try:
+        if args.live_motion:
+            live = create_live_motion_view(args.live_urdf, args.live_motion_trail)
+            print(f"Live motion viewer enabled with URDF: {args.live_urdf}")
+
         obs = robot.get_observation()
         now = np.array([float(obs[k]) for k in mapped_names], dtype=np.float64)
 
@@ -670,6 +925,17 @@ def main() -> int:
             t0 = time.perf_counter()
             cmd = {k: float(v) for k, v in zip(mapped_names, cmd_vec, strict=True)}
             robot.send_action(cmd)
+
+            if live is not None and ((i - replay_start_idx) % args.live_motion_every == 0 or i == total):
+                obs_now = robot.get_observation()
+                obs_vec = np.array([float(obs_now[k]) for k in mapped_names], dtype=np.float64)
+                update_live_motion_view(
+                    live=live,
+                    frame_idx=i,
+                    cmd_vec_deg=cmd_vec,
+                    obs_vec_deg=obs_vec,
+                )
+
             if i % args.print_every == 0 or i == total:
                 print(
                     f"frame {i:4d}/{total} | "
@@ -681,6 +947,7 @@ def main() -> int:
 
         print("Replay completed.")
     finally:
+        close_live_motion_view(live)
         print("Disconnecting robot...")
         robot.disconnect()
 

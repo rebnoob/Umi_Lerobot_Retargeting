@@ -100,6 +100,21 @@ python scripts/replay_so101_real.py \
   --arm-offsets-deg 0,90,-90,0,0 \
   --execute
 ```
+
+```bash
+python scripts/replay_so101_real.py \
+  --dataset-root "outputs/datasets/lerobot_umi_pick_cube_so101_v3" \
+  --episode 0 \
+  --execute \
+  --skip-calibrate \
+  --fps 10 \
+  --stride 2 \
+  --max-relative-target-deg 3 \
+  --max-relative-target-gripper 8 \
+  --flip-z \
+  --live-motion \
+  --live-urdf "assets/urdf/so101_new_calib.urdf"
+```
 ### 3) Useful safety flags
 
 - `--max-relative-target-deg 5`: clamp per-step arm motion to 5 degrees.
@@ -111,10 +126,13 @@ python scripts/replay_so101_real.py \
 - `--skip-calibrate`: skip automatic calibration prompt (use only if already calibrated).
 - `--arm-signs` and `--arm-offsets-deg`: per-case orientation correction.
   Example: `--arm-signs 1,-1,1,1,1 --arm-offsets-deg 0,90,-90,0,0`
+- `--hardware-arm-signs` and `--hardware-arm-offsets-deg`: extra hardware-only correction stage.
+- `--flip-z`: quick hardware fix for inverted vertical motion (negates joints 2/3/4).
 - `--orientation-source auto|metadata|cli`: orientation correction source.
   Default `auto` prefers dataset metadata (`meta/retarget_orientation.json`) when available.
   Backward-compatible metadata is supported: if `applied_in_dataset=true`, replay uses identity correction.
 - `--orientation-meta /path/to/retarget_orientation.json`: explicit metadata file path.
+- `--live-motion --live-urdf assets/urdf/so101_new_calib.urdf`: show commanded vs observed live 3D TCP motion during replay.
 
 ## Verify Folder Compatibility
 
